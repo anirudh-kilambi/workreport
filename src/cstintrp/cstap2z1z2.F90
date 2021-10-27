@@ -1,0 +1,343 @@
+    program cstap2z1z2
+
+!! Convert harmonic analysis output (z1==>x,z2==>y) from NEMO into
+!! amplitudes and phases (A, phi)
+
+!! Author: Francois Roy (2016)
+
+!! Method:
+
+!! Use convivial interface
+!! Use cstintrp sub-programs
+!! Write to std file
+
+!! Arguments:
+!! 
+
+!! Modules:
+    USE std
+    USE utils
+    USE cdf
+    USE cdf_std
+
+    IMPLICIT NONE
+
+!! Argument variables:
+
+    character(len=1000) :: fs,fd,fl      !Source,destination files,respectively
+    integer            :: iargc,jarg,narg, units, unitd
+    character(len=1000) :: carg,file_status
+
+!! Local variables:
+
+    logical status , maskou, chkmsk
+
+    !... variable management
+    type (std_variable),  &
+       dimension(:),      &
+       allocatable      :: vars,    &  !All variables from source file
+                           varsg       !vars for one particular horizontal grid
+    type (std_variable) :: varwg
+    integer             :: nvs, nvsg, ivsg
+
+    type (std_grid),      &
+       dimension(:),      &
+       allocatable      :: hgrds    !All grids from source file
+    integer             :: ngs, igs
+    integer             :: ierr, status_st90, i, j, it, &
+                           nxs, nys, nxd, nyd, nxw, nyw, gdidw, ns
+    real(kind=4), parameter  :: epsilon = 1.e-5
+    integer,              &
+     dimension(:,:),      &
+     allocatable        :: masks
+    real(kind=4),         &
+     dimension(:,:),      &
+     allocatable        :: xs,ys,zamp,zpha
+    integer, parameter  :: ncmax=1000
+    character(len=4),  &
+       dimension(ncmax) :: nvx, nvy, nva, nvp
+    integer             :: ic, nc, ii, im
+    real(kind=4)        :: pi, torad
+
+! Definition des arguments par defaut
+
+    file_status=''
+
+    fs='/bidon'
+    fd='/bidon'
+    fl='/bidon'
+
+! Traitement des arguments
+    narg= iargc()
+    IF ( narg < 6 .or. mod(narg,2).ne.0 ) THEN
+       PRINT *, ' Usage : cstap2z1z2 '
+       PRINT *, ' -fs filesrc (source file to convert)'
+       PRINT *, ' -fd filedst (destination file)'
+       PRINT *, ' -fl filelst (file with list of constituent names)'
+       PRINT *, ' Optional arguments:'
+       PRINT *, '   -status file_status (output program status in file_status for op needs)'
+       STOP
+    ENDIF
+    jarg=1
+    DO WHILE (jarg < narg )
+      CALL getarg (jarg, carg)
+      SELECT CASE ( carg)
+      CASE ('-fs' )
+         jarg=jarg+1 ; CALL getarg(jarg,carg) ; fs=TRIM(carg)
+      CASE ('-fd' )
+         jarg=jarg+1 ; CALL getarg(jarg,carg) ; fd=TRIM(carg)
+      CASE ('-fl' )
+         jarg=jarg+1 ; CALL getarg(jarg,carg) ; fl=TRIM(carg)
+      CASE ('-status' )
+         jarg=jarg+1 ; CALL getarg(jarg,carg) ; file_status=TRIM(carg)
+         status=.true.
+      CASE DEFAULT
+         PRINT *,' Unknown option :', TRIM(carg) ; STOP
+      END SELECT
+      jarg=jarg+1
+    ENDDO
+
+    if (status) then
+      status=.true.
+      open(99,file=file_status,form='formatted', status='old')
+      write(99,*) 'cstap2z1z2_status=ABORT'
+      close(99)
+    endif
+
+! Ouverture des fichiers
+
+    open(98,file=fl,form='formatted')
+    nc=0
+    DO
+      if (nc+1 > ncmax) STOP 'Not enough constituent storage'
+      read(98,'(a4,x,a4)',end=999) nvx(nc+1), nvy(nc+1)
+      nc=nc+1
+    ENDDO
+
+999 continue
+    if ( nc == 0 ) STOP 'No constituent to search for'
+
+    ierr = stdopen(trim(fd),'new',unitd,ierr_st90=status_st90)
+    if ( ierr /= 0 ) then
+      write(*,*) 'stdopen => ierr,status_st90=',ierr,status_st90
+      write(*,*) 'stdopen => fd=',trim(fd) 
+      STOP 
+    endif
+
+    ierr = stdopen(trim(fs),'old',units,ierr_st90=status_st90)
+    if ( ierr /= 0 ) then
+      write(*,*) 'stdopen => ierr,status_st90=',ierr,status_st90
+      write(*,*) 'stdopen => fs=',trim(fs) 
+      STOP 
+    endif
+
+! Classement des grilles et des variables du fichier source
+
+! ... toutes les variables source
+    nvs = getstdnvar(units,ierr_st90=status_st90)
+    if ( nvs <= 0 ) then 
+      write(*,*) 'CSTAP2Z1Z2 getstdnvar => problem reading source file variables'
+      write(*,*) 'CSTAP2Z1Z2 getstdnvar => should have at least one variable to read'
+      write(*,*) 'CSTAP2Z1Z2 getstdnvar => nvs,status_st90=',nvs,status_st90
+      STOP
+    endif
+    allocate(vars(nvs), varsg(nvs), stat=ierr)
+    if ( ierr /= 0 ) then
+      write(*,*) 'CSTAP2Z1Z2 vars, varsg, ... allocation problem'
+      write(*,*) 'CSTAP2Z1Z2 nvs=',nvs
+      STOP
+    endif
+    ierr = fillstdvar(vars,nvs,units,ierr_st90=status_st90)
+    if ( ierr /= 0 ) then
+      write(*,*) 'CSTAP2Z1Z2 fillstdvar => problem filling source variable informations'
+      write(*,*) 'CSTAP2Z1Z2 fillstdvar => ierr,status_st90=',ierr,status_st90
+      STOP
+    endif
+! ... toutes les grilles horizontales
+    write(*,*) 'CSTAP2Z1Z2: SCANNING SOURCE HORIZONTAL GRIDS'
+    ngs = getstdngrid(units,ierr_st90=status_st90)
+    if ( ngs <= 0 ) then 
+      write(*,*) 'CSTAP2Z1Z2 getstdngrid => problem reading source file grids'
+      write(*,*) 'CSTAP2Z1Z2 getstdngrid => should have at least one grid to read'
+      write(*,*) 'CSTAP2Z1Z2 getstdngrid => ngs,status_st90=',ngs,status_st90
+      STOP
+    endif
+    allocate(hgrds(ngs), stat=ierr)
+    if ( ierr /= 0 ) then
+      write(*,*) 'CSTAP2Z1Z2 hgrds allocation problem'
+      write(*,*) 'CSTAP2Z1Z2 ngs=',ngs
+      STOP
+    endif
+    ierr = fillstdgrid(hgrds,ngs,units,ierr_st90=status_st90)
+    if ( ierr < 0 ) then
+      write(*,*) 'CSTAP2Z1Z2 fillstdgrid => problem filling source file grid informations'
+      write(*,*) 'CSTAP2Z1Z2 fillstdgrid => ierr,status_st90=',ierr,status_st90
+      STOP
+    endif
+
+! Constantes
+    pi=acos(-1.)
+    torad=pi/180.
+
+! Boucle principale sur les grilles source
+
+    do igs = 1, ngs
+      ierr = filtergstdvar(varsg,nvsg,vars,nvs, &
+                           hgrds(igs)%grtyp,    &
+                           hgrds(igs)%ig1,      &
+                           hgrds(igs)%ig2,      &
+                           hgrds(igs)%ig3,      &
+                           hgrds(igs)%ig4,      &
+                           hgrds(igs)%ni,       &
+                           hgrds(igs)%nj)
+      if ( ierr < 0 ) then
+        write(*,*) 'CSTAP2Z1Z2 filtergstdvar => problem filtering grid information'
+        write(*,*) 'CSTAP2Z1Z2 filtergstdvar => igs=',igs
+        write(*,*) 'CSTAP2Z1Z2 filtergstdvar => hgrds(igs)=',hgrds(igs)
+        STOP
+      endif
+      ierr = xferstdparpos(varsg,nvsg,units,unitd)
+      if ( ierr /= 0 ) then
+        write(*,*) 'CSTAP2Z1Z2 xferstdparpos => problem transfering par pos parameters'
+        write(*,*) 'CSTAP2Z1Z2 hgrds(igs) =', hgrds(igs)
+        STOP
+      endif
+      ! Basic allocation
+      nxs=hgrds(igs)%ni
+      nys=hgrds(igs)%nj
+      nxd=nxs
+      nyd=nys
+
+      write(*,*) 'CSTAP2Z1Z2 treating grid with dimensions nxs,nys=',nxs,nys
+      write(*,*) 'CSTAP2Z1Z2 treating grid with dimensions hgrds(igs)=',hgrds(igs)
+
+      allocate(masks(nxs,nys))
+      allocate(xs(nxs,nys),ys(nxs,nys),zamp(nxs,nys),zpha(nxs,nys))
+
+      masks(:,:)=1 
+
+      do ic=1,nc
+
+        write(*,*) 'CSTAP2Z1Z2 TREATING ' , trim(nvx(ic)), ' ', trim(nvy(ic))
+
+        do ivsg = 1, nvsg
+
+          if ( varsg(ivsg)%nomvar == trim(nvx(ic)) ) then
+       
+            if ( varsg(ivsg)%typvar /= '@@' ) then
+              ierr = getstdvar(zamp(:,:),nxs,nys,units, &
+                               varsg(ivsg),ierr_st90=status_st90)
+              if ( ierr /= 0 ) then
+                write(*,*) 'CSTAP2Z1Z2 getstdvar (ZAMP) => ierr,status_st90=',ierr,status_st90
+                write(*,*) 'CSTAP2Z1Z2 getstdvar => varsg(ivsg)%nomvar=',varsg(ivsg)%nomvar
+                STOP
+              endif
+              varwg = varsg(ivsg)
+              varwg%nomvar=trim(nvy(ic))
+              ierr = getstdvar(zpha(:,:),nxs,nys,units, &
+                               varwg,ierr_st90=status_st90)
+              if ( ierr /= 0 ) then
+                write(*,*) 'CSTAP2Z1Z2 getstdvar (ZPHA) => ierr,status_st90=',ierr,status_st90
+                write(*,*) 'CSTAP2Z1Z2 getstdvar => varwg%nomvar=',varwg%nomvar
+                STOP
+              endif
+              do j=1,nys
+              do i=1,nxs
+                zpha(i,j)=zpha(i,j)*torad
+                ys(i,j)=-zamp(i,j)*sin(zpha(i,j))
+                xs(i,j)= zamp(i,j)*cos(zpha(i,j))
+                zpha(i,j)=zpha(i,j)/torad
+              enddo
+              enddo
+              do ii=1,len(nvx(ic))
+                if (nvx(ic)(ii:ii) /= nvy(ic)(ii:ii)) then
+                  im=ii
+                endif
+              enddo
+              varwg%nomvar=nvx(ic)
+              varwg%nomvar(im:im)='X'
+              ierr = putstdvar(unitd, xs(:,:),  &
+                               nxd, nyd, varwg, ierr_st90=status_st90)
+              if ( ierr /= 0 ) then
+                write(*,*) 'CSTAP2Z1Z2 putstdvar problem (Z1 ==> X)'
+                write(*,*) 'CSTAP2Z1Z2 status_st90=',status_st90
+                write(*,*) 'CSTAP2Z1Z2 varsg(ivsg)=',varsg(ivsg)
+                STOP
+              endif
+              varwg%nomvar=nvx(ic)
+              varwg%nomvar(im:im)='Y'
+              ierr = putstdvar(unitd, ys(:,:),  &
+                               nxd, nyd, varwg, ierr_st90=status_st90)
+              if ( ierr /= 0 ) then
+                write(*,*) 'CSTAP2Z1Z2 putstdvar problem (Z2 ==> Y)'
+                write(*,*) 'CSTAP2Z1Z2 status_st90=',status_st90
+                write(*,*) 'CSTAP2Z1Z2 varsg(ivsg)=',varsg(ivsg)
+              STOP
+              endif
+             else
+              ierr = getstdvar(masks(:,:),nxs,nys,units, &
+                               varsg(ivsg),ierr_st90=status_st90)
+              if ( ierr /= 0 ) then
+                write(*,*) 'CSTAP2Z1Z2 getstdvar (ZAMP MASKS) => ierr,status_st90=',ierr,status_st90
+                write(*,*) 'CSTAP2Z1Z2 getstdvar => varsg(ivsg)%nomvar=',varsg(ivsg)%nomvar
+                STOP
+              endif
+              do ii=1,len(nvx(ic))
+                if (nvx(ic)(ii:ii) /= nvy(ic)(ii:ii)) then
+                  im=ii
+                endif
+              enddo
+              varwg=varsg(ivsg)
+              varwg%nomvar=nvx(ic)
+              varwg%nomvar(im:im)='X'
+              ierr = putstdvar(unitd, masks(:,:),  &
+                               nxd, nyd, varwg, ierr_st90=status_st90)
+              if ( ierr /= 0 ) then
+                write(*,*) 'CSTAP2Z1Z2 putstdvar problem (Z1 ==> X MASKS)'
+                write(*,*) 'CSTAP2Z1Z2 status_st90=',status_st90
+                write(*,*) 'CSTAP2Z1Z2 varsg(ivsg)=',varsg(ivsg)
+                STOP
+              endif
+              varwg%nomvar(im:im)='Y'
+              ierr = putstdvar(unitd, masks(:,:),  &
+                               nxd, nyd, varwg, ierr_st90=status_st90)
+              if ( ierr /= 0 ) then
+                write(*,*) 'CSTAP2Z1Z2 putstdvar problem (Z2 ==> Y MASKS)'
+                write(*,*) 'CSTAP2Z1Z2 status_st90=',status_st90
+                write(*,*) 'CSTAP2Z1Z2 varsg(ivsg)=',varsg(ivsg)
+                STOP
+              endif
+            endif
+          endif
+
+        enddo
+
+      enddo
+
+      deallocate(masks,xs,ys,zamp,zpha)
+
+    enddo    !horizontal grids source
+
+! Fermeture des fichiers
+    ierr = stdclose(units,ierr_st90=status_st90)
+    if ( ierr /= 0 ) then
+      write(*,*) 'stdclose => ierr,status_st90=',ierr,status_st90
+      write(*,*) 'stdclose => fs=',trim(fs)
+      STOP
+    endif
+    ierr = stdclose(unitd,ierr_st90=status_st90)
+    if ( ierr /= 0 ) then
+      write(*,*) 'stdclose => ierr,status_st90=',ierr,status_st90
+      write(*,*) 'stdclose => fd=',trim(fd)
+      STOP
+    endif
+
+    if (status) then
+      open(99,file=file_status,form='formatted')
+      write(99,*) 'cstap2z1z2_status=FINISHED'
+      close(99)
+    endif
+
+    close(98)
+
+    end program cstap2z1z2

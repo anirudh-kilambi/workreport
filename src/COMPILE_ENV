@@ -1,0 +1,13 @@
+#. ssmuse-sh -x hpco/exp/openmpi/openmpi-3.1.2--hpcx-2.4.0-mofed-4.6--gcc
+. ssmuse-sh -x comm/eccc/all/opt/intelcomp/intelpsxe-cluster-19.0.3.199
+. ssmuse-sh -x hpco/exp/openmpi/openmpi-3.1.2--hpcx-2.4.0-mofed-4.6--intel-19.0.3.199
+. ssmuse-sh -x hpco/exp/openmpi-setup/openmpi-setup-0.2
+. ssmuse-sh -d /fs/ssm/eccc/mrd/rpn/libs/19.7.0
+. ssmuse-sh -x hpco/exp/hdf5-netcdf4/serial/static/intel-19.0.3.199/02
+
+. ssmuse-sh -d rpn/code-tools/1.5.0
+. r.load.dot eccc/cmd/cmde/ocean/libocn/1.0.6
+
+FFLAGS="-fp-model source -no-wrap-margin"
+LIBRMN=rmn
+LNETCDF="$(nf-config --flibs)"
