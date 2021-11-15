@@ -28,7 +28,7 @@ d.cstintrp: kdtree2.o grids.o mesh.o mesh_grid.o intrp_oce.o remap_cons_engine.o
 	s.f90 $(LFLAGS) $^ $(LIBS)  -o $@
 
 cstintrp_py.o: cstintrp_mod.o, intrp_itfc.o, grids.o 
-	s.f90 $(LFLAGS) $^ $(LIBS)  -o $@
+	$(FFLAGS) $^ $(LIBS)  -o $@
 
 
 
